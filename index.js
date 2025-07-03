@@ -1,5 +1,5 @@
 // index.js
-require('dotenv').config();  // charge les variables d'environnement
+require('dotenv').config();  // charge les variables d'environnement (YOUPI)
 const express = require('express');
 const path = require('path');
 const MovieDB = require('node-themoviedb');
