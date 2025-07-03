@@ -1,0 +1,131 @@
+body {
+  font-family: Arial, sans-serif;
+  background-color: #f7f7f7;
+  margin: 0;
+  padding: 20px;
+  text-align: center;
+}
+
+#searchArea {
+  margin-bottom: 10px;
+}
+
+svg {
+  margin: auto;
+  display: block;
+  border: 1px solid #ccc;
+  background-color: #fff;
+}
+
+.node circle {
+  stroke: #fff;
+  stroke-width: 1.5px;
+}
+
+#info {
+  margin-top: 1em;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+#actorDisplay {
+  text-align: left;
+}
+
+#guessArea input {
+  display: block;
+  margin: 5px auto;
+}
+
+#foundList {
+  list-style: none;
+  padding: 0;
+  margin-top: 10px;
+  text-align: left;
+}
+
+#info img {
+  max-width: 200px;
+  display: block;
+  margin: auto;
+}
+
+#score {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: #fff;
+  padding: 5px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  overflow: visible;
+}
+
+#scoreChange {
+  position: absolute;
+  left: 50%;
+  transform: translate(-50%, 0);
+  font-weight: bold;
+  opacity: 0;
+  transition: transform 0.5s, opacity 0.5s;
+}
+
+#scoreChange.show {
+  transform: translate(-50%, -20px);
+  opacity: 1;
+}
+
+#scoreChange.gain {
+  color: green;
+}
+
+#scoreChange.loss {
+  color: red;
+}
+
+
+#timer {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: #fff;
+  padding: 5px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+#targets {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin-bottom: 10px;
+}
+
+#targets .target {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 0.9em;
+}
+
+#targets img {
+  display: block;
+  max-height: 80px;
+  margin-bottom: 4px;
+}
+
+circle.selected {
+  stroke: red;
+  stroke-width: 3px;
+}
+
+#actorInfoTop {
+  display: flex;
+  justify-content: space-between;
+}
+
+#filmCount {
+  font-weight: bold;
+}

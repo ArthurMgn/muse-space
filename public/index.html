@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Muse-Space</title>
+  <script src="https://unpkg.com/d3@7.9.0/dist/d3.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <h1>Muse-Space</h1>
+  <div id="searchArea">
+    <input type="text" id="searchInput" placeholder="Rechercher un film" />
+    <button id="searchBtn">Démarrer</button>
+  </div>
+  <div id="score">Score: <span id="scoreValue">0</span><span id="scoreChange"></span></div>
+  <div id="timer">0s</div>
+  <div id="targets"></div>
+  <svg width="800" height="600"></svg>
+  <div id="info"></div>
+  <script>
+    const svg = d3.select('svg');
+    const width = +svg.attr('width');
+    const height = +svg.attr('height');
+    const startPos = { x: width * 0.25, y: height / 2 };
+    const targetPos = { x: width * 0.75, y: height / 2 };
+
+    const container = svg.append('g');
+
+    svg.call(
+      d3.zoom()
+        .scaleExtent([0.1, 4])
+        .on('zoom', event => container.attr('transform', event.transform))
+    );
+    svg.on('dblclick.zoom', null);
+
+    let nodes = [];
+    let links = [];
+    let actorState = {}; // stocke les infos par acteur
+    let score = 0;
+    let lastScore = 0;
+    let selectedId = null; // noeud actuellement affiché
+    let startMovie = null;
+    let targetMovie = null;
+    let timerInterval = null;
+    let startTime = 0;
+    let gameWon = false;
+
+    function isFixedNode(d) {
+      return (startMovie && d.id === 'm' + startMovie.id) ||
+             (targetMovie && d.id === 'm' + targetMovie.id);
+    }
+
+    function maskName(name, hints) {
+      return name.split('').map((c, i) => {
+        if (c === ' ' || c === '-' || c === "'") return c;
+        return hints && hints.has(i) ? c : '?';
+      }).join('');
+    }
+
+    function giveHint(actorNode) {
+      const state = actorState[actorNode.id];
+      if (!state.details) return;
+      if (!state.hints) state.hints = new Set();
+      const name = state.details.name;
+      const candidates = [];
+      for (let i = 0; i < name.length; i++) {
+        const ch = name[i];
+        if (!/[A-Za-zÀ-ÖØ-öø-ÿ]/.test(ch)) continue;
+        if (!state.hints.has(i)) candidates.push(i);
+      }
+      for (let j = 0; j < 3 && candidates.length > 0; j++) {
+        const idx = Math.floor(Math.random() * candidates.length);
+        const pos = candidates.splice(idx, 1)[0];
+        state.hints.add(pos);
+      }
+      score -= 20;
+      if (score < 0) score = 0;
+      updateScore();
+      showInfo(null, actorNode);
+    }
+
+    function updateScore() {
+      const delta = score - lastScore;
+      document.getElementById('scoreValue').textContent = score;
+      if (delta !== 0) {
+        const changeEl = document.getElementById('scoreChange');
+        changeEl.textContent = (delta > 0 ? '+' : '') + delta;
+        changeEl.className = (delta > 0 ? 'gain' : 'loss') + ' show';
+        setTimeout(() => {
+          changeEl.className = '';
+          changeEl.textContent = '';
+        }, 800);
+      }
+      lastScore = score;
+    }
+
+    function giveCharHint(actorNode, movieId) {
+      const state = actorState[actorNode.id];
+      const info = state.foundMovies[movieId];
+      if (!info || info.revealed || !info.character) return;
+      if (!info.hints) info.hints = new Set();
+      const name = info.character;
+      const candidates = [];
+      for (let i = 0; i < name.length; i++) {
+        const ch = name[i];
+        if (!/[A-Za-zÀ-ÖØ-öø-ÿ]/.test(ch)) continue;
+        if (!info.hints.has(i)) candidates.push(i);
+      }
+      if (candidates.length === 0) return;
+      const idx = Math.floor(Math.random() * candidates.length);
+      info.hints.add(candidates[idx]);
+      score -= 10;
+      if (score < 0) score = 0;
+      updateScore();
+      showInfo(null, actorNode);
+    }
+
+    function handleCharGuess(actorNode, movieId, guess) {
+      const state = actorState[actorNode.id];
+      const info = state.foundMovies[movieId];
+      if (!info || info.revealed) return;
+      if (guess.trim().toLowerCase() === info.character.toLowerCase()) {
+        info.revealed = true;
+        score += 100;
+        updateScore();
+        update();
+      }
+      showInfo(null, actorNode);
+    }
+
+    const simulation = d3
+      .forceSimulation(nodes)
+      .force('link', d3.forceLink(links).id(d => d.id).distance(120))
+      .force('charge', d3.forceManyBody().strength(-400))
+      .force('center', d3.forceCenter(width / 2, height / 2));
+
+    let link = container
+      .append('g')
+      .attr('stroke', '#999')
+      .attr('stroke-opacity', 0.6)
+      .selectAll('line');
+
+    let node = container
+      .append('g')
+      .attr('stroke', '#fff')
+      .attr('stroke-width', 1.5)
+      .selectAll('circle');
+
+    function nodeColor(d) {
+      if (d.type === 'movie') return 'orange';
+      const st = actorState[d.id] || {};
+      return st.revealed ? 'green' : 'gray';
+    }
+
+    function update() {
+      link = link.data(links);
+      link.exit().remove();
+      link = link.enter().append('line').merge(link);
+
+      node = node.data(nodes, d => d.id);
+      node.exit().remove();
+      const nodeEnter = node.enter().append('circle')
+        .attr('r', 8)
+        .attr('fill', nodeColor)
+        .on('click', showInfo)
+        .on('dblclick', expandNode)
+        .call(d3.drag()
+          .on('start', dragstarted)
+          .on('drag', dragged)
+          .on('end', dragended));
+      nodeEnter.append('title');
+      node = nodeEnter.merge(node);
+      node.attr('fill', nodeColor)
+        .classed('selected', d => d.id === selectedId);
+      node.select('title').text(d => {
+        if (d.type === 'actor') {
+          const st = actorState[d.id] || {};
+          return st.revealed ? d.label : maskName(d.label, st.hints);
+        }
+        return d.label;
+      });
+
+      simulation.nodes(nodes);
+      simulation.force('link').links(links);
+      simulation.alpha(1).restart();
+      checkVictory();
+    }
+
+    simulation.on('tick', () => {
+      link
+        .attr('x1', d => d.source.x)
+        .attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x)
+        .attr('y2', d => d.target.y);
+
+      node
+        .attr('cx', d => d.x)
+        .attr('cy', d => d.y);
+    });
+
+    async function expandNode(event, d) {
+      if (d.loading) return; // évite les requêtes multiples
+      d.loading = true;
+      try {
+        if (d.type === 'actor') {
+          const res = await fetch(`/api/person/${d.tmdbId}/movies`);
+          if (!res.ok) return;
+          const data = await res.json();
+          const movies = data.cast.slice(0, 7);
+          movies.forEach(m => {
+            const id = 'm' + m.id;
+            if (!nodes.find(n => n.id === id)) {
+              nodes.push({ id, tmdbId: m.id, label: m.title, type: 'movie' });
+            }
+            if (!links.find(l => l.source.id === d.id && l.target.id === id)) {
+              links.push({ source: d.id, target: id });
+            }
+          });
+        } else if (d.type === 'movie') {
+          const res = await fetch(`/api/movie/${d.tmdbId}`);
+          if (!res.ok) return;
+          const data = await res.json();
+          const actors = data.credits.cast.slice(0, 7);
+          actors.forEach(a => {
+            const id = 'a' + a.id;
+            if (!nodes.find(n => n.id === id)) {
+              nodes.push({ id, tmdbId: a.id, label: a.name, type: 'actor' });
+              actorState[id] = { revealed: false, foundMovies: {}, hints: new Set() };
+            }
+            if (!links.find(l => l.source.id === id && l.target.id === d.id)) {
+              links.push({ source: d.id, target: id });
+            }
+          });
+        }
+      } finally {
+        d.loading = false;
+        update();
+      }
+    }
+
+    async function showInfo(event, d) {
+      selectedId = d.id;
+      update();
+      const info = document.getElementById('info');
+      if (d.type === 'movie') {
+        const res = await fetch(`/api/movie/${d.tmdbId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        info.innerHTML = `<h2>${data.title}</h2>` +
+          (data.poster_path ? `<img src="https://image.tmdb.org/t/p/w200${data.poster_path}" alt="" />` : '') +
+          `<p>${data.overview || ''}</p>`;
+      } else {
+        const res = await fetch(`/api/person/${d.tmdbId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!actorState[d.id]) actorState[d.id] = { revealed: false, foundMovies: {}, hints: new Set() };
+        actorState[d.id].details = data;
+        const state = actorState[d.id];
+        if (!state.filmography) {
+          const r2 = await fetch(`/api/person/${d.tmdbId}/movies`);
+          if (r2.ok) state.filmography = (await r2.json()).cast;
+          else state.filmography = [];
+        }
+        links.forEach(l => {
+          let movieNode = null;
+          if (l.source.id === d.id && l.target.type === 'movie') movieNode = l.target;
+          else if (l.target.id === d.id && l.source.type === 'movie') movieNode = l.source;
+          if (movieNode && !state.foundMovies[movieNode.id]) {
+            let char = '';
+            if (state.filmography) {
+              const f = state.filmography.find(m => m.id === movieNode.tmdbId);
+              if (f) char = f.character || '';
+            }
+            state.foundMovies[movieNode.id] = { title: movieNode.label, character: char, revealed: false, hints: new Set() };
+          }
+        });
+        const displayName = state.revealed ? data.name : maskName(data.name, state.hints);
+        const imgPart = data.profile_path ? `<img src="https://image.tmdb.org/t/p/w200${data.profile_path}" alt="" />` : '';
+        const nameInput = state.revealed ? '' : `<input type="text" id="nameInput" placeholder="Nom de l'acteur" autocomplete="off" />`;
+        const right = `<div id="guessArea">${nameInput}<input type="text" id="movieInputGuess" placeholder="Film" autocomplete="off" />` +
+          `<button id="guessBtn">Explorer</button>` +
+          `<button id="hintBtn">Indice (-20)</button></div>`;
+        const foundCount = Object.keys(state.foundMovies).length;
+        const totalCount = state.filmography.length;
+        let list = '';
+        const found = Object.entries(state.foundMovies);
+        if (found.length) {
+          list = '<ul id="foundList">' + found.map(([mid, f]) => {
+            if (f.revealed) {
+              return `<li>${f.title} - ${f.character}</li>`;
+            } else {
+              const charName = maskName(f.character, f.hints);
+              return `<li>${f.title} - ${charName} <input type="text" data-mid="${mid}" class="charGuess" placeholder="Personnage" autocomplete="off" />` +
+                `<button class="hintChar" data-mid="${mid}">Indice</button></li>`;
+            }
+          }).join('') + '</ul>';
+        }
+        const top = `<div id="actorInfoTop"><div id="filmCount">${foundCount}/${totalCount}</div>${right}</div>`;
+        const left = `<div id="actorDisplay"><h2>${displayName}</h2>` + imgPart + `</div>`;
+        info.innerHTML = top + left + list;
+        document.getElementById('guessBtn').onclick = () => handleGuess(d);
+        document.getElementById('hintBtn').onclick = () => giveHint(d);
+        const ni = document.getElementById('nameInput');
+        const mi = document.getElementById('movieInputGuess');
+        if (ni) ni.addEventListener('keydown', e => { if (e.key === 'Enter') handleGuess(d); });
+        if (mi) mi.addEventListener('keydown', e => { if (e.key === 'Enter') handleGuess(d); });
+        document.querySelectorAll('.charGuess').forEach(inp => {
+          inp.addEventListener('keydown', ev => { if (ev.key === 'Enter') handleCharGuess(d, inp.dataset.mid, inp.value); });
+        });
+        document.querySelectorAll('.hintChar').forEach(btn => {
+          btn.onclick = () => giveCharHint(d, btn.dataset.mid);
+        });
+        if (mi) mi.focus();
+        else if (ni) ni.focus();
+      }
+    }
+
+    async function handleGuess(actorNode) {
+      const nameInput = document.getElementById('nameInput');
+      const movieInput = document.getElementById('movieInputGuess');
+      const nameGuess = nameInput ? nameInput.value.trim() : '';
+      const movieGuess = movieInput ? movieInput.value.trim() : '';
+      if (!nameGuess && !movieGuess) return;
+      if (nameInput) nameInput.value = '';
+      if (movieInput) movieInput.value = '';
+      const state = actorState[actorNode.id];
+      if (!state.details) {
+        const res = await fetch(`/api/person/${actorNode.tmdbId}`);
+        if (res.ok) state.details = await res.json();
+      }
+      if (state.details && !state.revealed && nameGuess && nameGuess.toLowerCase() === state.details.name.toLowerCase()) {
+        state.revealed = true;
+        score += 100;
+        updateScore();
+        update();
+        showInfo(null, actorNode);
+        // if user also entered a movie, continue checking
+      }
+
+      if (!state.filmography) {
+        const res = await fetch(`/api/person/${actorNode.tmdbId}/movies`);
+        if (res.ok) state.filmography = (await res.json()).cast;
+        else state.filmography = [];
+      }
+        if (movieGuess) {
+          let movie = state.filmography.find(m => m.title.toLowerCase() === movieGuess.toLowerCase());
+          if (!movie) {
+            const linked = links.find(l => l.source.id === actorNode.id && nodes.find(n => n.id === l.target.id && n.type === 'movie' && n.label.toLowerCase() === movieGuess.toLowerCase()));
+            if (linked) {
+              const n = nodes.find(nn => nn.id === linked.target.id);
+              movie = { id: n.tmdbId, title: n.label, character: '' };
+            }
+          }
+          if (!movie) {
+            const result = await searchMovie(movieGuess);
+            if (result) {
+              const found = state.filmography.find(m => m.id === result.id);
+              if (found) movie = found;
+            }
+          }
+          if (movie) {
+            const movieId = 'm' + movie.id;
+          let movieNode = nodes.find(n => n.id === movieId);
+          if (!movieNode) {
+            movieNode = { id: movieId, tmdbId: movie.id, label: movie.title, type: 'movie' };
+            nodes.push(movieNode);
+            links.push({ source: actorNode.id, target: movieId });
+          }
+          const already = Object.keys(state.foundMovies).length;
+          if (!state.foundMovies[movieId]) {
+            state.foundMovies[movieId] = { title: movie.title, character: movie.character || '', revealed: false, hints: new Set() };
+            score += 50 + 10 * already;
+            updateScore();
+            update();
+            expandNode(null, movieNode);
+          }
+        }
+      }
+      showInfo(null, actorNode);
+    }
+
+    async function loadMovie(id) {
+      nodes = [];
+      links = [];
+      actorState = {};
+      score = 0;
+      updateScore();
+      const res = await fetch(`/api/movie/${id}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const movieNode = { id: 'm' + data.id, tmdbId: data.id, label: data.title, type: 'movie', fx: startPos.x, fy: startPos.y };
+      nodes.push(movieNode);
+      const actors = data.credits.cast.slice(0, 7);
+      actors.forEach(a => {
+        const actorNode = { id: 'a' + a.id, tmdbId: a.id, label: a.name, type: 'actor' };
+        nodes.push(actorNode);
+        links.push({ source: movieNode.id, target: actorNode.id });
+        actorState[actorNode.id] = { revealed: false, foundMovies: {}, hints: new Set() };
+      });
+      update();
+      showInfo(null, movieNode);
+      startTimer();
+    }
+
+    function startTimer() {
+      clearInterval(timerInterval);
+      startTime = Date.now();
+      document.getElementById('timer').textContent = '0s';
+      timerInterval = setInterval(() => {
+        const t = Math.floor((Date.now() - startTime) / 1000);
+        document.getElementById('timer').textContent = t + 's';
+      }, 1000);
+    }
+
+    function stopTimer() {
+      clearInterval(timerInterval);
+    }
+
+    function checkVictory() {
+      if (gameWon || !startMovie || !targetMovie) return;
+      const startId = 'm' + startMovie.id;
+      const targetId = 'm' + targetMovie.id;
+      if (!nodes.find(n => n.id === targetId)) return;
+      const queue = [startId];
+      const visited = new Set();
+      while (queue.length) {
+        const cur = queue.shift();
+        if (cur === targetId) {
+          gameWon = true;
+          stopTimer();
+          alert('Bravo! Vous avez reli\u00e9 ' + startMovie.title + ' et ' + targetMovie.title + '!');
+          return;
+        }
+        if (visited.has(cur)) continue;
+        visited.add(cur);
+        links.forEach(l => {
+          const s = typeof l.source === 'object' ? l.source.id : l.source;
+          const t = typeof l.target === 'object' ? l.target.id : l.target;
+          if (s === cur && !visited.has(t)) queue.push(t);
+          else if (t === cur && !visited.has(s)) queue.push(s);
+        });
+      }
+    }
+
+    async function searchMovie(title) {
+      const res = await fetch(`/api/search-movie?q=${encodeURIComponent(title)}`);
+      if (!res.ok) return null;
+      const list = await res.json();
+      return list[0] || null;
+    }
+
+    async function findTargetMovie(base) {
+      const r1 = await fetch(`/api/movie/${base.id}`);
+      if (!r1.ok) return null;
+      const d1 = await r1.json();
+      const cast1 = d1.credits.cast;
+      for (const a of cast1) {
+        const r2 = await fetch(`/api/person/${a.id}/movies`);
+        if (!r2.ok) continue;
+        const movies2 = (await r2.json()).cast.filter(m => m.id !== base.id);
+        if (!movies2.length) continue;
+        const m2 = movies2[0];
+        const r3 = await fetch(`/api/movie/${m2.id}`);
+        if (!r3.ok) continue;
+        const d2 = await r3.json();
+        const cast2 = d2.credits.cast.filter(ac => ac.id !== a.id);
+        if (!cast2.length) continue;
+        const a2 = cast2[0];
+        const r4 = await fetch(`/api/person/${a2.id}/movies`);
+        if (!r4.ok) continue;
+        const movies3 = (await r4.json()).cast.filter(m => m.id !== base.id && m.id !== m2.id);
+        if (!movies3.length) continue;
+        return movies3[0];
+      }
+      return null;
+    }
+
+    async function startGame(m1, m3) {
+      gameWon = false;
+      startMovie = m1;
+      targetMovie = m3;
+      const targets = document.getElementById('targets');
+      targets.innerHTML = `
+        <div class="target"><img src="https://image.tmdb.org/t/p/w92${m1.poster_path}" alt="" /><span>${m1.title}</span></div>
+        <div class="target"><img src="https://image.tmdb.org/t/p/w92${m3.poster_path}" alt="" /><span>${m3.title}</span></div>`;
+      await loadMovie(m1.id);
+      let targetNode = nodes.find(n => n.id === 'm' + m3.id);
+      if (!targetNode) {
+        targetNode = { id: 'm' + m3.id, tmdbId: m3.id, label: m3.title, type: 'movie', fx: targetPos.x, fy: targetPos.y };
+        nodes.push(targetNode);
+        update();
+      } else {
+        targetNode.fx = targetPos.x;
+        targetNode.fy = targetPos.y;
+      }
+      await expandNode(null, targetNode);
+    }
+
+    function dragstarted(event, d) {
+      if (isFixedNode(d)) return;
+      if (!event.active) simulation.alphaTarget(0.3).restart();
+      d.fx = d.x;
+      d.fy = d.y;
+    }
+    function dragged(event, d) {
+      if (isFixedNode(d)) return;
+      d.fx = event.x;
+      d.fy = event.y;
+    }
+    function dragended(event, d) {
+      if (isFixedNode(d)) return;
+      if (!event.active) simulation.alphaTarget(0);
+      d.fx = null;
+      d.fy = null;
+    }
+
+    document.addEventListener('keydown', ev => {
+      if (ev.target.tagName === 'INPUT') return;
+      if (ev.key === 'ArrowRight' || ev.key === 'ArrowLeft') {
+        if (!nodes.length) return;
+        let idx = nodes.findIndex(n => n.id === selectedId);
+        if (idx === -1) idx = 0;
+        idx = ev.key === 'ArrowRight' ? (idx + 1) % nodes.length : (idx - 1 + nodes.length) % nodes.length;
+        showInfo(null, nodes[idx]);
+        const mi = document.getElementById('movieInputGuess');
+        const ni = document.getElementById('nameInput');
+        if (mi) mi.focus();
+        else if (ni) ni.focus();
+      }
+    });
+
+    document.getElementById('searchBtn').onclick = async () => {
+      const q = document.getElementById('searchInput').value.trim();
+      if (!q) return;
+      const base = await searchMovie(q);
+      if (!base) { alert('Aucun film trouvé'); return; }
+      const target = await findTargetMovie(base);
+      if (!target) { alert('Impossible de trouver un film relié'); return; }
+      startGame(base, target);
+    };
+    document.getElementById('searchInput').addEventListener('keydown', ev => {
+      if (ev.key === 'Enter') document.getElementById('searchBtn').click();
+    });
+  </script>
+</body>
+</html>
